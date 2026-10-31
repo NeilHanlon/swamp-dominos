@@ -1,0 +1,17 @@
+manifestVersion: 1
+name: "@kneel/dominos"
+version: "2026.10.31.1"
+description: "Track a Domino's pizza order through its tracker stages (placed -> prep -> bake -> quality-check -> out-for-delivery | ready-for-pickup -> delivered -> complete). Read-only against Domino's public guest-tracker API (no auth); look up by phone number or by Store ID + Order Key, and persist a normalized order-status snapshot. The phone number is PII and is never stored or logged in full, only as last-4."
+
+repository: https://github.com/NeilHanlon/swamp-dominos
+
+additionalFiles:
+  - README.md
+  - LICENSE.txt
+  - CHANGELOG.md
+
+models:
+  - dominos.ts
+
+# Pure network/JS extension — runs anywhere. Empty = universal.
+platforms: []
