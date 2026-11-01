@@ -148,13 +148,13 @@ Deno.test("normalizeOrder: completed carry-out detail (real-shape)", () => {
       StoreAsOfTime: "2026-10-31T18:10:00-04:00",
       Phone: "5555550100",
     },
-    { fetchedAt: "2026-10-31T22:05:00Z", source: "tracker-v2", phoneLast4: "8171" },
+    { fetchedAt: "2026-10-31T22:05:00Z", source: "tracker-v2", phoneLast4: "0100" },
   );
   assertEquals(s.stage, "complete");
   assertEquals(s.delivered, true);
   assertEquals(s.estimatedWaitMinutes, "6-16");
   assertEquals(s.asOfTime, "2026-10-31T18:10:00-04:00");
-  assertEquals(s.raw.Phone, "***-***-8171"); // redacted in raw
+  assertEquals(s.raw.Phone, "***-***-0100"); // redacted in raw
 });
 
 Deno.test("normalizeOrder: in-progress carry-out out the door -> ready for pickup", () => {

@@ -15,7 +15,7 @@ function sampleStatus(): OrderStatus {
   return {
     fetchedAt: "2026-10-31T22:05:00Z",
     source: "tracker-v2",
-    phoneLast4: "8171",
+    phoneLast4: "0100",
     storeId: "4337",
     orderId: "2026-10-31#000000",
     storeOrderId: null,
