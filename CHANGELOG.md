@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026.11.01.1
+
+Declare the SPDX license (`MIT`) in the manifest so the registry records it (the
+`LICENSE.txt` file already shipped). No functional change; identity upgrade.
+
 ## 2026.10.31.1
 
 Initial release. Read-only Domino's pizza-tracker behavior, verified end-to-end

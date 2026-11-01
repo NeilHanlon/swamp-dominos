@@ -483,9 +483,16 @@ interface MethodContext {
 /** Domino's pizza-tracker behavior type. */
 export const model = {
   type: "@kneel/dominos",
-  version: "2026.10.31.1",
+  version: "2026.11.01.1",
   globalArguments: GlobalArgsSchema,
-  upgrades: [],
+  upgrades: [
+    {
+      toVersion: "2026.11.01.1",
+      description:
+        "Declare SPDX license (MIT) in the manifest. No functional or attribute change.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "order-status": {
       description:
