@@ -7,6 +7,7 @@ import {
   normalizeOrder,
   parseLegacyXml,
   pick,
+  redactPhoneFields,
   sanitizePhone,
   stageProgress,
 } from "./dominos.ts";
@@ -110,6 +111,28 @@ Deno.test("normalizeOrder: delivery order in the oven", () => {
   assertEquals(s.delivered, false);
   assertEquals(s.placedAt, "2026-10-31T22:00:00Z");
   assertEquals(s.raw.StoreID, "4337");
+});
+
+Deno.test("redactPhoneFields: masks phone-ish keys, recurses, keeps rest", () => {
+  const out = redactPhoneFields({
+    StoreID: "4337",
+    Phone: "6175551234",
+    customer: { PhoneNumber: "16175559999", name: "Neil" },
+    items: [{ phone: "5551112222" }],
+  });
+  assertEquals(out.StoreID, "4337");
+  assertEquals(out.Phone, "***-***-1234");
+  assertEquals((out.customer as Record<string, unknown>).PhoneNumber, "***-***-9999");
+  assertEquals((out.customer as Record<string, unknown>).name, "Neil");
+  assertEquals((out.items as Array<Record<string, unknown>>)[0].phone, "***-***-2222");
+});
+
+Deno.test("normalizeOrder: raw passthrough is phone-redacted", () => {
+  const s = normalizeOrder(
+    { OrderStatus: "Bake", Phone: "6175551234" },
+    { fetchedAt: "2026-10-31T22:05:00Z", source: "tracker-v2", phoneLast4: "1234" },
+  );
+  assertEquals(s.raw.Phone, "***-***-1234");
 });
 
 Deno.test("normalizeOrder: carryout ready for pickup is terminal", () => {

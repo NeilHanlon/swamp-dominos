@@ -164,6 +164,31 @@ export function maskPhone(raw: string): string {
   return `***-***-${d.slice(-4)}`;
 }
 
+/**
+ * Deep-clone a record, masking any field whose key contains "phone" to its
+ * last-4. The upstream order object contains the customer's full phone number;
+ * since we persist the raw object verbatim, this is the single choke point that
+ * keeps the full number out of stored data. Recurses through nested
+ * objects/arrays. String phone values are masked; non-strings are nulled.
+ */
+export function redactPhoneFields<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => redactPhoneFields(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (/phone/i.test(k)) {
+        out[k] = typeof v === "string" ? maskPhone(v) : null;
+      } else {
+        out[k] = redactPhoneFields(v);
+      }
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Tolerant field access over drifting upstream records
 // ---------------------------------------------------------------------------
@@ -294,7 +319,7 @@ export function normalizeOrder(
     timings,
     delivered: stage === "delivered" || stage === "complete" ||
       stage === "ready-for-pickup",
-    raw: order,
+    raw: redactPhoneFields(order),
   };
 }
 
@@ -562,7 +587,11 @@ export const model = {
         context.logger.info("Tracking Domino's order by phone (***-***-{l})", {
           l: last4,
         });
-        const orders = await fetchByPhone(g, phone);
+        // Redact at the boundary: the full phone lives inside each order
+        // object, and last4 comes from the caller's input, not these records.
+        const orders = (await fetchByPhone(g, phone)).map((o) =>
+          redactPhoneFields(o)
+        );
         const handles: DataHandle[] = [];
         handles.push(
           await context.writeResource("orders", "orders", {
@@ -617,7 +646,9 @@ export const model = {
           );
         }
         const last4 = phone.slice(-4);
-        const orders = await fetchByPhone(g, phone);
+        const orders = (await fetchByPhone(g, phone)).map((o) =>
+          redactPhoneFields(o)
+        );
         context.logger.info("Found {n} recent order(s) for ***-***-{l}", {
           n: orders.length,
           l: last4,
