@@ -6,17 +6,20 @@ tracker stages, the same way the "Pizza Tracker" web widget does.
 ## What it does
 
 Given the phone number an order was placed under (or a Store ID + Order Key),
-it polls Domino's public guest-tracker API and persists a normalized
-`order-status` snapshot with a canonical stage:
+it polls Domino's public `tracker-presentation-service` (v2 JSON) and persists a
+normalized `order-status` snapshot with a canonical stage:
 
 ```
 placed -> prep -> bake -> quality-check -> out-for-delivery | ready-for-pickup -> delivered -> complete
 ```
 
-There is no authentication: the tracker endpoint is the unauthenticated,
-phone-keyed service the guest tracker page uses. The phone number is PII, not a
-secret, and is never persisted or logged in full — only as its last four
-digits.
+The phone lookup returns only order "directory" records (an `Actions.Track`
+path, no status); the live status comes from a second call to that path. The
+service needs `dpz-market` / `dpz-language` headers (set from the `market` /
+`language` global args, default `UNITED_STATES` / `en`) or it answers 400 —
+there is no auth token. The phone number is PII, not a secret, and is never
+persisted or logged in full (not even inside the `raw` passthrough) — only as
+its last four digits.
 
 ## Install
 
@@ -41,10 +44,10 @@ swamp behavior create @kneel/dominos pizza --global-arg phone="(617) 555-1234"
 swamp behavior run pizza track
 
 # Track a specific order by store + key
-swamp behavior run pizza track --arg storeId=4337 --arg orderKey=abc-123
+swamp behavior run pizza track --input storeId=4337 --input orderKey=abc-123
 
 # Just list recent orders for a phone (raw passthrough)
-swamp behavior run pizza list-orders --arg phone=6175551234
+swamp behavior run pizza list-orders --input phone=6175551234
 ```
 
 Read the result:
@@ -74,6 +77,7 @@ target is configured and the tracker host answers before running.
 
 Domino's upstream field shapes drift between releases, so the response schemas
 are deliberately tolerant and the normalizer reads fields case-insensitively
-with fallbacks. The stage mapping and normalization are built against the
-documented / reverse-engineered tracker shapes; they should be spot-checked
-against a live order the first time the tracker is pointed at a real order.
+with fallbacks. The stage mapping and normalization were verified end-to-end
+against a live US carry-out order on 2026-10-31 (both the phone and
+store+order-key paths). Non-US markets (e.g. Canada) use a different, classic
+XML endpoint that this extension does not implement.

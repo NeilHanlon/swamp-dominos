@@ -3,14 +3,18 @@
  *
  * A read-only tracker for a Domino's order: given the phone number the order
  * was placed under (or a Store ID + Order Key), it polls Domino's public
- * guest-tracker endpoints and persists a normalized order-status snapshot with
- * a canonical stage (placed -> prep -> bake -> quality-check ->
+ * tracker-presentation-service (v2 JSON) and persists a normalized order-status
+ * snapshot with a canonical stage (placed -> prep -> bake -> quality-check ->
  * out-for-delivery | ready-for-pickup -> delivered -> complete).
  *
- * There is no auth: the tracker is the same unauthenticated, phone-keyed
- * endpoint the "Pizza Tracker" web widget uses for guest orders. The phone
- * number is PII, not a secret — it is never persisted or logged in full, only
- * masked to its last four digits.
+ * The phone lookup returns only order "directory" records (an `Actions.Track`
+ * path, no live status); the status comes from a second call to that path. The
+ * service requires `dpz-market` / `dpz-language` headers or it answers 400;
+ * there is no auth token.
+ *
+ * The phone number is PII, not a secret — it is never persisted or logged in
+ * full, only masked to its last four digits (including inside the `raw`
+ * passthrough, via redactPhoneFields).
  *
  * The upstream field shapes drift between Domino's releases, so the response
  * schemas are deliberately tolerant (raw records pass through) and the
@@ -38,8 +42,11 @@ const GlobalArgsSchema = z.object({
   trackerBaseUrl: z.url().default("https://tracker.dominos.com").describe(
     "Tracker presentation service base URL (modern JSON API).",
   ),
-  legacyBaseUrl: z.url().default("https://trkweb.dominos.com").describe(
-    "Legacy orderstorage tracker base URL (XML API, used for track-by-order).",
+  market: z.string().default("UNITED_STATES").describe(
+    "dpz-market header value. US tracker is UNITED_STATES; other markets vary.",
+  ),
+  language: z.string().default("en").describe(
+    "dpz-language header value (e.g. en).",
   ),
 });
 
@@ -128,9 +135,9 @@ export function mapStage(statusText: string): Stage {
  * pickup terminal when the service method is a carryout/pickup.
  */
 export function adjustForService(stage: Stage, serviceMethod: string): Stage {
-  const m = (serviceMethod ?? "").toLowerCase();
-  const isCarryout = m.includes("carryout") || m.includes("pickup") ||
-    m.includes("carry out");
+  // Collapse punctuation so "Carry-Out", "Carry Out" and "Carryout" all match.
+  const norm = (serviceMethod ?? "").toLowerCase().replace(/[^a-z]/g, "");
+  const isCarryout = norm.includes("carryout") || norm.includes("pickup");
   if (!isCarryout) return stage;
   if (stage === "out-for-delivery" || stage === "delivered") {
     return "ready-for-pickup";
@@ -229,7 +236,7 @@ const TimingsSchema = z.object({
 
 const OrderStatusSchema = z.object({
   fetchedAt: z.iso.datetime(),
-  source: z.enum(["tracker-v2", "legacy-xml"]),
+  source: z.literal("tracker-v2"),
   phoneLast4: z.string().nullable(),
   storeId: z.string().nullable(),
   orderId: z.string().nullable(),
@@ -242,6 +249,8 @@ const OrderStatusSchema = z.object({
   progressPct: z.number(),
   rawStatus: z.string().nullable(),
   placedAt: z.string().nullable(),
+  estimatedWaitMinutes: z.string().nullable(),
+  asOfTime: z.string().nullable(),
   timings: TimingsSchema,
   delivered: z.boolean(),
   raw: RawRecord,
@@ -270,7 +279,7 @@ export function normalizeOrder(
   order: Loose,
   opts: {
     fetchedAt: string;
-    source: "tracker-v2" | "legacy-xml";
+    source: "tracker-v2";
     phoneLast4: string | null;
   },
 ): OrderStatus {
@@ -316,6 +325,8 @@ export function normalizeOrder(
     progressPct: stageProgress(stage),
     rawStatus,
     placedAt: timings.startTime,
+    estimatedWaitMinutes: pickStr(order, "EstimatedWaitMinutes"),
+    asOfTime: pickStr(order, "StoreAsOfTime", "AsOfTime"),
     timings,
     delivered: stage === "delivered" || stage === "complete" ||
       stage === "ready-for-pickup",
@@ -338,77 +349,79 @@ export function extractOrders(resp: unknown): Loose[] {
   return [];
 }
 
-/**
- * Best-effort flat-field extraction from the legacy XML tracker body. The
- * legacy `GetTrackerData` response is flat XML (`<field>value</field>`); pull
- * the known leaf fields by name. This is intentionally minimal — it is a
- * fallback path, and the normalizer keeps whatever it finds under `raw`.
- */
-export function parseLegacyXml(xml: string): Loose {
-  const out: Loose = {};
-  const fields = [
-    "StoreID",
-    "OrderID",
-    "OrderKey",
-    "StoreOrderID",
-    "OrderStatus",
-    "OrderDescription",
-    "ServiceMethod",
-    "StartTime",
-    "MakeTimeSecs",
-    "OvenTime",
-    "RackTime",
-    "RouteTime",
-    "DeliveryTime",
-    "Phone",
-  ];
-  for (const f of fields) {
-    const m = xml.match(new RegExp(`<${f}>([^<]*)</${f}>`, "i"));
-    if (m) out[f] = m[1].trim();
+/** Extract the `Actions.Track` detail path from a phone-lookup order record. */
+export function trackPathOf(order: Loose): string | null {
+  const actions = order.Actions ?? order.actions;
+  if (actions && typeof actions === "object") {
+    const t = (actions as Loose).Track ?? (actions as Loose).track;
+    if (typeof t === "string" && t) return t;
   }
-  return out;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
 
-/** GET the tracker-v2 orders list for a phone number (modern JSON API). */
-async function fetchByPhone(
-  g: GlobalArgs,
-  phone: string,
-): Promise<Loose[]> {
-  const base = g.trackerBaseUrl.replace(/\/+$/, "");
-  const url =
-    `${base}/tracker-presentation-service/v2/orders?phonenumber=${phone}`;
-  const r = await fetch(url, {
-    headers: { "Accept": "application/json", "User-Agent": "swamp-dominos" },
-  });
-  if (!r.ok) {
-    throw new Error(
-      `Domino's tracker lookup failed: ${r.status} ${r.statusText}`,
-    );
-  }
-  return extractOrders(await r.json());
+const TRACKER_PREFIX = "/tracker-presentation-service";
+
+/**
+ * The tracker service rejects requests (400) without its market/language
+ * headers, so every call carries them. No auth token is involved.
+ */
+function trackerHeaders(g: GlobalArgs): Record<string, string> {
+  return {
+    "accept": "application/json",
+    "content-type": "application/json; charset=utf-8",
+    "dpz-language": g.language,
+    "dpz-market": g.market,
+  };
 }
 
-/** GET the legacy XML tracker body for a Store ID + Order Key. */
-async function fetchByOrder(
+async function trackerGet(g: GlobalArgs, url: string): Promise<unknown> {
+  const r = await fetch(url, { headers: trackerHeaders(g) });
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(
+      `Domino's tracker GET failed: ${r.status} ${r.statusText} ${
+        body.slice(0, 200)
+      }`,
+    );
+  }
+  return await r.json();
+}
+
+/**
+ * Phone lookup. Returns an array of order "directory" records — each carries an
+ * `Actions.Track` path but NOT the live status; the status comes from a second
+ * call to that path (see {@link fetchDetailByPath}).
+ */
+async function fetchByPhone(g: GlobalArgs, phone: string): Promise<Loose[]> {
+  const base = g.trackerBaseUrl.replace(/\/+$/, "");
+  const url = `${base}${TRACKER_PREFIX}/v2/orders?phonenumber=${phone}`;
+  return extractOrders(await trackerGet(g, url));
+}
+
+/** Fetch the detailed status record for an `Actions.Track` path. */
+async function fetchDetailByPath(g: GlobalArgs, path: string): Promise<Loose> {
+  const base = g.trackerBaseUrl.replace(/\/+$/, "");
+  // The path already begins with "/v2/..."; join onto the service prefix.
+  const rel = path.replace(/^\/+/, "");
+  const url = `${base}${TRACKER_PREFIX}/${rel}`;
+  return (await trackerGet(g, url)) as Loose;
+}
+
+/** Fetch the detailed status record directly by Store ID + Order Key. */
+async function fetchDetailByOrder(
   g: GlobalArgs,
   storeId: string,
   orderKey: string,
 ): Promise<Loose> {
-  const base = g.legacyBaseUrl.replace(/\/+$/, "");
-  const url = `${base}/orderstorage/GetTrackerData?StoreID=${
+  const base = g.trackerBaseUrl.replace(/\/+$/, "");
+  const url = `${base}${TRACKER_PREFIX}/v2/orders/stores/${
     encodeURIComponent(storeId)
-  }&OrderKey=${encodeURIComponent(orderKey)}`;
-  const r = await fetch(url, { headers: { "User-Agent": "swamp-dominos" } });
-  if (!r.ok) {
-    throw new Error(
-      `Domino's legacy tracker failed: ${r.status} ${r.statusText}`,
-    );
-  }
-  return parseLegacyXml(await r.text());
+  }/orderkeys/${encodeURIComponent(orderKey)}`;
+  return (await trackerGet(g, url)) as Loose;
 }
 
 function nowIso(): string {
@@ -498,18 +511,10 @@ export const model = {
         context: { globalArgs: GlobalArgs; logger: Logger },
       ): Promise<{ pass: boolean; errors?: string[] }> => {
         const g = context.globalArgs;
-        const hasOrder = Boolean(g.storeId && g.orderKey);
-        const hasPhone = Boolean(
-          g.phone && sanitizePhone(g.phone).length >= 10,
-        );
-        if (!hasOrder && !hasPhone) {
-          return {
-            pass: false,
-            errors: [
-              "No tracker target: set `phone` (10 digits) or both `storeId` and `orderKey`.",
-            ],
-          };
-        }
+        // NOTE: checks receive only globalArgs, never the per-call method
+        // arguments — so we cannot assert a target here (phone/storeId/orderKey
+        // may legitimately be passed per call). Target presence is validated
+        // inside the method. This check verifies reachability only.
         try {
           const r = await fetch(
             `${g.trackerBaseUrl.replace(/\/+$/, "")}/`,
@@ -545,19 +550,19 @@ export const model = {
         const orderKey = a.orderKey ?? g.orderKey;
         const rawPhone = a.phone ?? g.phone;
 
-        // Track-by-order (legacy XML) takes precedence when fully specified.
+        // Track-by-order: one direct detail call, no phone lookup.
         if (storeId && orderKey) {
           context.logger.info(
             "Tracking Domino's order by store/order ({store})",
             { store: storeId },
           );
-          const record = await fetchByOrder(g, storeId, orderKey);
-          const phoneLast4 = record.Phone
-            ? maskPhone(String(record.Phone)).slice(-4)
+          const detail = await fetchDetailByOrder(g, storeId, orderKey);
+          const phoneLast4 = detail.Phone
+            ? sanitizePhone(String(detail.Phone)).slice(-4)
             : null;
-          const status = normalizeOrder(record, {
+          const status = normalizeOrder(detail, {
             fetchedAt,
-            source: "legacy-xml",
+            source: "tracker-v2",
             phoneLast4,
           });
           const handle = await context.writeResource(
@@ -587,8 +592,9 @@ export const model = {
         context.logger.info("Tracking Domino's order by phone (***-***-{l})", {
           l: last4,
         });
-        // Redact at the boundary: the full phone lives inside each order
-        // object, and last4 comes from the caller's input, not these records.
+        // Step 1: phone lookup -> order "directory" records (no status).
+        // Redact at the boundary: the full phone can appear inside each record,
+        // and last4 comes from the caller's input, not these records.
         const orders = (await fetchByPhone(g, phone)).map((o) =>
           redactPhoneFields(o)
         );
@@ -608,8 +614,16 @@ export const model = {
           );
           return { dataHandles: handles };
         }
+        // Step 2: follow the chosen order's Actions.Track to the live status.
         const chosen = orders[Math.min(a.index, orders.length - 1)];
-        const status = normalizeOrder(chosen, {
+        const trackPath = trackPathOf(chosen);
+        if (!trackPath) {
+          throw new Error(
+            "Selected order has no Actions.Track path to follow for status.",
+          );
+        }
+        const detail = await fetchDetailByPath(g, trackPath);
+        const status = normalizeOrder(detail, {
           fetchedAt,
           source: "tracker-v2",
           phoneLast4: last4,

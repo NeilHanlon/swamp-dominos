@@ -5,11 +5,11 @@ import {
   mapStage,
   maskPhone,
   normalizeOrder,
-  parseLegacyXml,
   pick,
   redactPhoneFields,
   sanitizePhone,
   stageProgress,
+  trackPathOf,
 } from "./dominos.ts";
 
 Deno.test("mapStage: legacy phase names", () => {
@@ -41,9 +41,20 @@ Deno.test("mapStage: latest phase wins over earlier substrings", () => {
 
 Deno.test("adjustForService: carryout remaps delivery -> pickup", () => {
   assertEquals(adjustForService("out-for-delivery", "Carryout"), "ready-for-pickup");
+  // Live API returns "Carry-Out" (hyphen) — punctuation must not defeat it.
+  assertEquals(adjustForService("out-for-delivery", "Carry-Out"), "ready-for-pickup");
   assertEquals(adjustForService("delivered", "Pickup"), "ready-for-pickup");
-  assertEquals(adjustForService("bake", "Carryout"), "bake");
+  assertEquals(adjustForService("bake", "Carry-Out"), "bake");
   assertEquals(adjustForService("out-for-delivery", "Delivery"), "out-for-delivery");
+});
+
+Deno.test("trackPathOf: reads Actions.Track, else null", () => {
+  assertEquals(
+    trackPathOf({ Actions: { Track: "/v2/orders/stores/4337/orderkeys/1" } }),
+    "/v2/orders/stores/4337/orderkeys/1",
+  );
+  assertEquals(trackPathOf({ Actions: {} }), null);
+  assertEquals(trackPathOf({ OrderID: "x" }), null);
 });
 
 Deno.test("stageProgress: monotonic pipeline", () => {
@@ -78,17 +89,6 @@ Deno.test("extractOrders: bare array, Orders, orders, else empty", () => {
   assertEquals(extractOrders({ orders: [{ a: 1 }] }).length, 1);
   assertEquals(extractOrders({ nope: true }).length, 0);
   assertEquals(extractOrders(null).length, 0);
-});
-
-Deno.test("parseLegacyXml: pulls known flat fields", () => {
-  const xml =
-    "<root><StoreID>4337</StoreID><OrderStatus>Bake</OrderStatus>" +
-    "<OrderKey>abc-123</OrderKey><ServiceMethod>Delivery</ServiceMethod></root>";
-  const out = parseLegacyXml(xml);
-  assertEquals(out.StoreID, "4337");
-  assertEquals(out.OrderStatus, "Bake");
-  assertEquals(out.OrderKey, "abc-123");
-  assertEquals(out.ServiceMethod, "Delivery");
 });
 
 Deno.test("normalizeOrder: delivery order in the oven", () => {
@@ -135,9 +135,31 @@ Deno.test("normalizeOrder: raw passthrough is phone-redacted", () => {
   assertEquals(s.raw.Phone, "***-***-1234");
 });
 
-Deno.test("normalizeOrder: carryout ready for pickup is terminal", () => {
+Deno.test("normalizeOrder: completed carry-out detail (real-shape)", () => {
+  // Mirrors the live tracker detail payload verified 2026-10-31.
   const s = normalizeOrder(
-    { OrderStatus: "Out the Door", ServiceMethod: "Carryout" },
+    {
+      OrderStatus: "Complete",
+      ServiceMethod: "Carry-Out",
+      StoreID: "4337",
+      OrderKey: "433700000000",
+      StartTime: "2026-10-31T17:54:36-04:00",
+      EstimatedWaitMinutes: "6-16",
+      StoreAsOfTime: "2026-10-31T18:10:00-04:00",
+      Phone: "5555550100",
+    },
+    { fetchedAt: "2026-10-31T22:05:00Z", source: "tracker-v2", phoneLast4: "8171" },
+  );
+  assertEquals(s.stage, "complete");
+  assertEquals(s.delivered, true);
+  assertEquals(s.estimatedWaitMinutes, "6-16");
+  assertEquals(s.asOfTime, "2026-10-31T18:10:00-04:00");
+  assertEquals(s.raw.Phone, "***-***-8171"); // redacted in raw
+});
+
+Deno.test("normalizeOrder: in-progress carry-out out the door -> ready for pickup", () => {
+  const s = normalizeOrder(
+    { OrderStatus: "Out the Door", ServiceMethod: "Carry-Out" },
     { fetchedAt: "2026-10-31T22:05:00Z", source: "tracker-v2", phoneLast4: null },
   );
   assertEquals(s.stage, "ready-for-pickup");
