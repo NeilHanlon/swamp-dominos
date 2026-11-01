@@ -1,0 +1,15 @@
+# Accepted quality-rubric exceptions.
+#
+# The `phone` argument is NOT a secret — it is the (semi-public) phone number an
+# order was placed under, which is how Domino's public guest tracker is keyed.
+# It is PII, handled as such (masked to last-4 in all persisted data and logs),
+# but there is no vault/token involved. The README examples legitimately show a
+# literal `phone=` argument, so the secret-unsafe-docs rule is accepted here.
+version: 1
+accept:
+  - rule: secret-unsafe-docs
+    file: README.md
+    line: 37
+  - rule: secret-unsafe-docs
+    file: README.md
+    line: 50

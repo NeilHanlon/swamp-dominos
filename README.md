@@ -34,7 +34,7 @@ Set a default phone (recommended) or a Store ID + Order Key as global arguments
 on the behavior:
 
 ```bash
-swamp behavior create @kneel/dominos pizza --global-arg phone="(617) 555-1234"
+swamp behavior create @kneel/dominos pizza --global-arg phone="<10-digit-phone>"
 ```
 
 ## Use
@@ -47,7 +47,7 @@ swamp behavior run pizza track
 swamp behavior run pizza track --input storeId=4337 --input orderKey=abc-123
 
 # Just list recent orders for a phone (raw passthrough)
-swamp behavior run pizza list-orders --input phone=6175551234
+swamp behavior run pizza list-orders --input phone=<10-digit-phone>
 ```
 
 Read the result:
@@ -63,8 +63,26 @@ swamp data query 'behavior("pizza") && name == "order-status"' --select content
 | `track`       | Fetch + persist the current tracker status for one order             |
 | `list-orders` | List recent orders for a phone (raw snapshot, no normalization)      |
 
-A `live`-labelled `tracker-reachable` check guards `track`: it verifies a
-target is configured and the tracker host answers before running.
+A `live`-labelled `tracker-reachable` check guards `track`: it verifies the
+tracker host answers before running.
+
+## Reports
+
+Both run automatically after `track` and read the latest `order-status`:
+
+| Report                        | Shows                                                                |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `@kneel/dominos-status-card`  | "Where's my pizza" card: stage + progress bar, ETA, store, items     |
+| `@kneel/dominos-order-journey`| Per-stage timeline with durations, total time, and the store's ETA   |
+
+```bash
+swamp report get @kneel/dominos-status-card   --model pizza --markdown
+swamp report get @kneel/dominos-order-journey  --model pizza --markdown
+```
+
+The journey is reconstructed from a single snapshot — Domino's returns
+`StartTime`, the make duration, and the oven/rack marks in one payload, so no
+repeated polling is needed.
 
 ## Data
 

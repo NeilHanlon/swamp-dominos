@@ -13,5 +13,9 @@ additionalFiles:
 models:
   - dominos.ts
 
+reports:
+  - status_card.ts
+  - order_journey.ts
+
 # Pure network/JS extension — runs anywhere. Empty = universal.
 platforms: []

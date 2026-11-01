@@ -15,6 +15,10 @@ against a live US order:
   `complete`), with progress %, service method, timings, estimated wait, and a
   `raw` passthrough.
 - `list-orders` — raw recent-orders snapshot (directory records) for a phone.
+- Reports (run after `track`): `@kneel/dominos-status-card` ("where's my pizza"
+  card with progress bar + items) and `@kneel/dominos-order-journey` (per-stage
+  timeline with durations, total time, and the store's ETA, reconstructed from
+  a single snapshot's timing fields).
 - `tracker-reachable` live check guards `track` (reachability only; target
   validation lives in the method, which can see per-call args).
 - Phone numbers are PII: never persisted or logged in full, only as last-4 —

@@ -90,7 +90,7 @@ const PROGRESS_ORDER: Stage[] = [
 ];
 
 /** Human label for each canonical stage. */
-const STAGE_LABEL: Record<Stage, string> = {
+export const STAGE_LABEL: Record<Stage, string> = {
   "placed": "Order Placed",
   "prep": "Prep (make line)",
   "bake": "Bake (oven)",
@@ -501,6 +501,10 @@ export const model = {
       garbageCollection: 10,
     },
   },
+  reports: [
+    "@kneel/dominos-status-card",
+    "@kneel/dominos-order-journey",
+  ],
   checks: {
     "tracker-reachable": {
       description:
